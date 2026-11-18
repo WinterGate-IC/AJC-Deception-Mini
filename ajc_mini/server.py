@@ -9,10 +9,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import deception, layers, profiles, tarpit, util
+from . import deception, layers, profiles, ratelimit, tarpit, util
 
 STATE = {"cfg": None, "store": None, "eng": None, "sessions": None,
-         "log": None, "active": 0, "lock": threading.Lock(), "max": 64}
+         "log": None, "active": 0, "lock": threading.Lock(), "max": 64,
+         "limiter": None}
 
 
 def _auth(h):
@@ -33,11 +34,13 @@ def _client(h):
     return util.norm_ip(h.client_address[0]) or h.client_address[0]
 
 
-def _json(h, code, obj):
+def _json(h, code, obj, headers=None):
     body = json.dumps(obj, indent=1).encode()
     h.send_response(code)
     h.send_header("Content-Type", "application/json; charset=utf-8")
     h.send_header("Cache-Control", "no-store")
+    for k, v in (headers or {}).items():
+        h.send_header(k, str(v))
     h.send_header("Content-Length", str(len(body)))
     h.end_headers()
     if h.command != "HEAD":
@@ -143,6 +146,20 @@ class Handler(BaseHTTPRequestHandler):
         if not local and not trusted and store.is_denied(ip):
             self._drop(rst=True)
             return
+        lim = STATE["limiter"].allow(ip)
+        if not lim.get("ok"):
+            sess0 = STATE["sessions"].get(ip, cfg.get("canary_secret"))
+            sess0.boost = min(40, max(1, sess0.boost + 2))
+            time.sleep(min(0.8, 0.1 + sess0.boost * 0.02))
+            if lim.get("strikes", 0) >= 3:
+                eng.handle_event({"ip": ip, "type": "rate_abuse", "severity": "medium",
+                                  "method": self.command, "endpoint": path, "payload": ""},
+                                 source="rate")
+                self._drop(rst=True)
+                return
+            _json(self, 429, {"ok": False, "error": "slow down"},
+                  {"Retry-After": str(lim.get("retry_after", 2))})
+            return
         body = self._body().decode("utf-8", "replace")
         sess = STATE["sessions"].get(ip, cfg.get("canary_secret"))
         info = deception.classify(self.command, path, dict(self.headers), body)
@@ -236,7 +253,8 @@ def serve(config, store, engine, bind=None, port=None):
     port = int(port or config.get("port") or 8791)
     STATE.update({"cfg": config, "store": store, "eng": engine,
                   "sessions": SessionStore(util.safe_int(config.get("deception.session_ttl"), 1800)),
-                  "log": str(Path(config.data_dir) / "logs" / "access.log")})
+                  "log": str(Path(config.data_dir) / "logs" / "access.log"),
+                  "limiter": ratelimit.RateLimiter()})
     util.ensure_dir(Path(config.data_dir) / "logs", 0o700)
     httpd = ThreadingHTTPServer((bind, port), Handler)
     httpd.daemon_threads = True
