@@ -96,5 +96,4 @@ Everything else is deception.
 
 ## License
 
-No license is granted for this code by this repository. It is published for
-inspection and defensive use by the operator who deploys it.
+MIT.
