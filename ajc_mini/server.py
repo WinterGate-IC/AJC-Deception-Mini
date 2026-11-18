@@ -135,7 +135,7 @@ class Handler(BaseHTTPRequestHandler):
             _json(self, 200, {"ok": True, "service": "ajc-mini",
                               "layers": len(layers.LAYERS), "ts": int(util.now())})
             return
-        if path.startswith("/mini/"):
+        if path in ("/mini", "/mini/") or path.startswith("/mini/api/"):
             self._api(path)
             return
         local = util.is_private_ip(ip) and not bool(cfg.get("allow_private"))
@@ -213,7 +213,21 @@ class Handler(BaseHTTPRequestHandler):
             ev.setdefault("ip", _client(self))
             _json(self, 200, STATE["eng"].handle_event(ev, source="api"))
             return
-        _json(self, 404, {"ok": False, "error": "not found"})
+        # Unknown /mini/* falls through to the decoy surface.
+        sess = STATE["sessions"].get(_client(self), STATE["cfg"].get("canary_secret"))
+        resp = deception.serve(sess, STATE["cfg"].get("canary_secret"), self.command,
+                               path, dict(self.headers), "", base_depth=1,
+                               deception_level=3,
+                               tarpit_max_ms=util.safe_int(STATE["cfg"].get("deception.tarpit_max_ms"), 900),
+                               max_maze=16)
+        raw = str(resp.get("body") or "").encode("utf-8", "replace")
+        self.send_response(int(resp.get("status") or 200))
+        for k, v in (resp.get("headers") or {}).items():
+            self.send_header(k, str(v))
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(raw)
 
 
 def serve(config, store, engine, bind=None, port=None):

@@ -203,7 +203,14 @@ def fake_code(name: str, secret: str, client: str, depth: int) -> str:
 
 def trap_page(path: str, secret: str, client: str, depth: int) -> str:
     """A plausible-but-fake answer for reverse-engineering probes."""
-    kind = "source" if any(k in path.lower() for k in ("source", "src", "git", "tree", "pycache", "server.py")) else "config"
+    low = path.lower()
+    code_suffix = (".py", ".js", ".ts", ".go", ".rs", ".java", ".php", ".sh",
+                   ".service", ".conf", ".cfg", ".ini")
+    kind = "source" if (any(k in low for k in ("source", "src", "git", "tree",
+                                               "pycache", "server.py", "engine.py",
+                                               "deception.py", "labyrinth.py",
+                                               "mirage.py", "ajc_portable", "ajc_mini"))
+                        or low.endswith(code_suffix)) else "config"
     if kind == "source":
         body = fake_repo(secret, client, path, depth)
         ctype = "text/plain; charset=utf-8"
